@@ -1,0 +1,196 @@
+import astropy.coordinates
+from astropy.io import fits
+import matplotlib.pyplot as plt
+import numpy as np
+import astroplan.plots
+import astropy.units as u
+from scipy.ndimage import gaussian_filter
+import astropy.time
+
+name='SP20230713212625.fits'  #enter your file name with bias data
+bias=fits.open(name)
+Name='SP20230713193517.fits' #enter your file name with stars data
+stars=fits.open(Name)
+bias.info()
+
+
+#%%
+headers=bias[0].header
+head=stars[0].header
+head2=stars[1].header
+
+for key, value in head.items():
+   print(key,value)
+
+data=bias[0].data
+print(np.shape(data)) #shape of bias
+
+#All parameters you can find in head and head2, geocoordinates of KGO are used below
+
+time=astropy.time.Time('2023-07-13 19:33:47')
+KGOearth=astropy.coordinates.EarthLocation(lat=head2['LATITUDE']*u.deg,lon=head2['LONGITUD']*u.deg,height=2127*u.m)
+KGO=astroplan.Observer(longitude=head2['LONGITUD']*u.deg,latitude=head2['LATITUDE']*u.deg,elevation=2127*u.m)
+star_cord=astropy.coordinates.SkyCoord(ra=head['RAAPP']*u.deg,dec=head['DECAPP']*u.deg)
+star=astroplan.FixedTarget(coord=star_cord,name='Star')
+
+astroplan.plots.plot_altitude(star,KGO,time)
+
+altitude=star_cord.transform_to(astropy.coordinates.AltAz(obstime=time,location=KGOearth))
+print(f"Altitude = {altitude.alt:.3}")
+plt.show()
+astroplan.plots.plot_parallactic(star,KGO,time)
+par=astroplan.Observer.parallactic_angle(time=time,target=star_cord,self=KGO)
+print(par)
+plt.show()
+#%%
+Data=stars[0].data
+print(np.shape(Data))
+summa=list()
+#The frames of stars are processed below: bias, background illumination is taken into account, the brightest pixel is centered by Gaussian, the Fourier transform is used, the square of the received data is considered and the average is calculated. The last procedure is the deduction of the photonic substrate for the cutoff frequency
+for j in range(5222):
+   image_data = Data[j]
+   image_data=image_data-bias
+   
+   def sigma(rdata):
+      a=np.mean(rdata[0:100,0:100])
+      b=np.mean(rdata[156:256,0:100])
+      c=np.mean(rdata[156:256,412:512])
+      d=np.mean(rdata[0:100,412:512])
+      return a, b, c, d
+
+   e=np.mean(sigma(image_data))
+   image_data=image_data-e
+   Gauss=gaussian_filter(image_data,sigma=10)
+   max=Gauss.max()
+   a=np.where(Gauss==max)
+   image_data=image_data[(a[0][0]-50):(a[0][0]+50),(a[1][0]-50):(a[1][0]+50)]
+   if len(image_data)<100: # Removing broken files
+      continue
+   image_data=np.fft.fft2(image_data)
+   image_data=np.fft.fftshift(image_data)
+   image_data = np.power(np.abs(image_data),2)
+   summa.append(image_data)
+Dat=summa[0]
+for j in range(1,len(summa)):
+   Dat+=summa[j]
+Dat=Dat/len(summa)
+
+plt.figure(figsize=(10, 10))
+plt.imshow(np.log10(Dat), cmap='gray',vmin=5,vmax=7.5)
+plt.yticks(np.arange(8, 93, step=14),['1.5','1','0.5','0','-0.5','-1','-1.5'])
+plt.ylabel("fy/fc")
+plt.xticks(np.arange(8, 93, step=14),['1.5','1','0.5','0','-0.5','-1','-1.5'])
+plt.xlabel("fx/fc")
+cbar=plt.colorbar(shrink=0.85)
+foton=0
+count=0
+for i in range(100):
+   for j in range(100):
+      if (((50-j)**2+(50-i)**2)**0.5)*105615.36>2840909:
+         foton+=Dat[i][j]
+         count+=1
+foton=foton/count
+
+Dat=Dat-foton
+plt.figure(figsize=(10, 10))
+plt.imshow(np.log10(Dat), cmap='gray',vmin=5,vmax=7.5)
+plt.yticks(np.arange(8, 93, step=14),['1.5','1','0.5','0','-0.5','-1','-1.5'])
+plt.ylabel("fy/fc")
+plt.xticks(np.arange(8, 93, step=14),['1.5','1','0.5','0','-0.5','-1','-1.5'])
+plt.xlabel("fx/fc")
+cbar=plt.colorbar(shrink=0.85)
+#%%
+
+Median=np.copy(Dat)
+
+Rotate=np.copy(Dat)
+import cv2
+# We calculate the average median
+def rotate_image(image, angle):
+  image_center = tuple(np.array(image.shape[1::-1]) / 2)
+  rot_mat = cv2.getRotationMatrix2D(image_center, angle, 1.0)
+  result = cv2.warpAffine(image, rot_mat, image.shape[1::-1], flags=cv2.INTER_LINEAR)
+  return result
+for i in range(1,100):
+   Rotate=rotate_image(Rotate,1)
+   Median=Median+Rotate
+
+plt.figure(figsize=(10, 10))
+plt.imshow(np.log10(Median/100), cmap='gray')
+plt.yticks(np.arange(8, 93, step=14),['1.5','1','0.5','0','-0.5','-1','-1.5'])
+plt.ylabel("fy/fc")
+plt.xticks(np.arange(8, 93, step=14),['1.5','1','0.5','0','-0.5','-1','-1.5'])
+plt.xlabel("fx/fc")
+cbar=plt.colorbar(shrink=0.85)
+Median=Median/100
+print(Median.min())
+#%%
+from scipy.optimize import least_squares
+
+Normal=Dat/Median
+normalize=105615.36/2840909
+
+plt.figure(figsize=(10, 10))
+plt.imshow((np.log10(Normal[22:78,22:78])), cmap='gray',vmax=1)
+plt.yticks(np.arange(0, 57, step=5.69),['1','0.8','0.6','0.4','0.2','0','-0.2','-0.4','-0.6','-0.8','-1'])
+plt.ylabel("fy/fc")
+plt.xticks(np.arange(0, 57, step=14),['-1','-0.5','0','0.5','1'])
+plt.xlabel("fx/fc")
+cbar=plt.colorbar(shrink=0.85)
+
+# Next, we approximate by the least squares method and find the ratio of the intensities q and the displacement of the components of the double star deltay deltax
+
+Spectrum=Normal[22:78,22:78]
+length_of_matrix=56
+spatial_frequency=105615.36
+x,y=np.meshgrid(np.arange(length_of_matrix),np.arange(length_of_matrix))
+r=((length_of_matrix/2-x)**2+abs(length_of_matrix/2-y)**2)**0.5
+
+mask=np.copy(r)
+for i in range(length_of_matrix):
+   for j in range(length_of_matrix):
+      if 21>r[i][j]>3:
+         mask[i][j]=1
+      else:
+         mask[i][j]=0
+
+# The z parameter is used to increase the accuracy of determining the desired parameters
+def method(coeffs):
+   q,Z,deltax,deltay=coeffs
+   x,y=np.meshgrid(np.arange(length_of_matrix),np.arange(length_of_matrix))
+   return Z*(np.power(np.abs(1-q+q*np.exp(-complex(0,1)*2*np.pi*(deltax*(length_of_matrix/2-x)*spatial_frequency + deltay*spatial_frequency*((length_of_matrix)/2-y)))),2))*mask
+
+def curve(coeffs,Spectrum):
+   Approximate=method(coeffs)
+   Neviazka=np.reshape(Spectrum-Approximate,(56*56,))
+   return Neviazka
+x0 = np.array([0.2,1.1,1.16e-6,0.97e-6], dtype=float)
+args=least_squares(curve,x0,args=(Spectrum,))
+
+print(args)
+
+split=np.concatenate((Normal[22:78,22:50],method(args.x)[:,28:]),axis=1)*mask
+
+plt.figure(figsize=(10, 10))
+plt.imshow(np.log10(split), cmap='gray',)
+plt.yticks(np.arange(0, 57, step=5.69),['1','0.8','0.6','0.4','0.2','0','-0.2','-0.4','-0.6','-0.8','-1'])
+plt.ylabel("fy/fc")
+plt.xticks(np.arange(0, 57, step=14),['-1','-0.5','0','0.5','1'])
+plt.xlabel("fx/fc")
+cbar=plt.colorbar(shrink=0.85)
+
+# Next we determine the errors of the parameters being determined (rough estimate)
+
+approx = method((args.x[0],args.x[1],args.x[2],args.x[3]))
+rchi2 = np.sum(((approx-Spectrum)*mask)**2)/(length_of_matrix-4)
+J = args.jac
+cov = np.linalg.inv(J.T.dot(J))*rchi2
+errors = np.sqrt(np.diagonal(cov))
+
+for par in range(0,4):
+	print(f'estimation of parameter {par}: {args.x[par]}+/-{errors[par]}')
+
+plt.figure(figsize=(5, 5))
+plt.plot(approx)
+plt.show()
+#%%
